@@ -1,6 +1,8 @@
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export async function GET(req: Request) {
@@ -13,7 +15,6 @@ export async function GET(req: Request) {
   }
 
   const session = await stripe.checkout.sessions.retrieve(sessionId);
-
   const subscriptionId =
     typeof session.subscription === "string" ? session.subscription : "";
 
@@ -27,6 +28,7 @@ export async function GET(req: Request) {
   const res = NextResponse.redirect(new URL("/interview", origin));
 
   if (active) {
+    // ✅ cookies dedam per NextResponse (be cookies() API)
     res.cookies.set("pro", "1", {
       httpOnly: true,
       sameSite: "lax",
