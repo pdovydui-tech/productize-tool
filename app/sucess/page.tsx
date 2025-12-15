@@ -1,46 +1,25 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 
-export default function SuccessPage({ searchParams }: { searchParams: { session_id?: string } }) {
-  const router = useRouter();
-  const [msg, setMsg] = useState("Processing payment...");
+export default function SuccessPage() {
+  const params = useSearchParams();
 
   useEffect(() => {
-    async function run() {
-      const session_id = searchParams?.session_id;
-      if (!session_id) {
-        setMsg("Missing session_id ❌");
-        return;
-      }
-
-      const res = await fetch("/api/credits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id }),
-      });
-
-      if (!res.ok) {
-        const t = await res.text();
-        setMsg("Error adding credits ❌\n" + t);
-        return;
-      }
-
-      setMsg("Payment successful ✅ Credits added! Redirecting…");
-
-      setTimeout(() => {
-        router.replace("/interview");
-      }, 2000);
+    const sessionId = params.get("session_id");
+    if (!sessionId) {
+      window.location.href = "/pay";
+      return;
     }
-
-    run();
-  }, [router, searchParams]);
+    // suaktyvina pro cookie per server route ir nukreipia į interview
+    window.location.href = `/api/activate?session_id=${encodeURIComponent(sessionId)}`;
+  }, [params]);
 
   return (
-    <main style={{ maxWidth: 600, margin: "80px auto", padding: 16, fontFamily: "system-ui" }}>
-      <h1>Success</h1>
-      <pre style={{ whiteSpace: "pre-wrap" }}>{msg}</pre>
+    <main className="p-8">
+      <h1 className="text-2xl font-semibold">Activating subscription…</h1>
+      <p>Please wait.</p>
     </main>
   );
 }

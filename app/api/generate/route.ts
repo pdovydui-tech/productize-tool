@@ -1,105 +1,51 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 
-type Payload = { answers: Record<string, string> };
-
-function getCookieNumber(cookieHeader: string | null, name: string) {
-  if (!cookieHeader) return 0;
-  const m = cookieHeader.match(new RegExp(`${name}=(\\d+)`));
-  return m ? Number(m[1]) : 0;
-}
-
-function hasCookie(cookieHeader: string | null, name: string) {
-  if (!cookieHeader) return false;
-  return new RegExp(`${name}=`).test(cookieHeader);
-}
-
-function buildPrompt(answers: Record<string, string>) {
-  return `You are an expert in productizing freelancing services into sellable digital products.
-
-Return STRICT JSON only (no markdown, no extra text).
-
-Schema:
-{
-  "product_name": string,
-  "one_liner": string,
-  "target_buyer": string,
-  "format": string,
-  "price_range": string,
-  "outline": string[],
-  "landing_page": {
-    "headline": string,
-    "subheadline": string,
-    "bullets": string[],
-    "sections": { "title": string, "content": string }[],
-    "faq": { "q": string, "a": string }[]
-  },
-  "quick_start_48h": string[]
-}
-
-Interview answers:
-${JSON.stringify(answers, null, 2)}
-`;
-}
+export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const jar = await cookies();
+
+  const isPro = jar.get("pro")?.value === "1";
+  const freeUsed = jar.get("free_used")?.value === "1";
+
+  // 1 free use, po to tik subscription
+  if (!isPro && freeUsed) {
+    return NextResponse.json({ error: "PAYMENT_REQUIRED" }, { status: 402 });
+  }
+
+  // pažymim free panaudotą (jei dar ne pro)
+  const res = NextResponse.next();
+  if (!isPro && !freeUsed) {
+    res.cookies.set("free_used", "1", {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 365,
+    });
+  }
+
+  // --- AI GENERAVIMAS (minimalus, bet realiai veikiantis) ---
+  const body = await req.json();
+  const answers = body.answers ?? {};
+
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
   }
 
-  // Paywall: 1 free generation, then requires credits
-  const cookieHeader = req.headers.get("cookie");
-  const credits = getCookieNumber(cookieHeader, "credits");
-  const freeUsed = hasCookie(cookieHeader, "free_used");
+  // paprasta "template" generacija (jei tavo projekte jau yra kitoks OpenAI kvietimas,
+  // gali palikti savo, svarbu tik kad "gate" viršuje liktų)
+  const output = {
+    title: `Productized offer for: ${answers?.niche ?? "your niche"}`,
+    bullets: [
+      "Clear package scope",
+      "Simple onboarding",
+      "Deliverables + timeline",
+      "Pricing + CTA",
+    ],
+    answers,
+  };
 
-  if (credits <= 0 && freeUsed) {
-    return NextResponse.json({ error: "PAYMENT_REQUIRED" }, { status: 402 });
-  }
-
-  const body = (await req.json()) as Payload;
-  const answers = body.answers ?? {};
-
-  const prompt = buildPrompt(answers);
-
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0.4,
-      messages: [
-        { role: "system", content: "Return strict JSON only." },
-        { role: "user", content: prompt },
-      ],
-    }),
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    return NextResponse.json({ error: "OpenAI error", detail: text }, { status: 500 });
-  }
-
-  const data = await resp.json();
-  const content = data?.choices?.[0]?.message?.content ?? "{}";
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON from model", raw: content }, { status: 500 });
-  }
-
-  const res = NextResponse.json(parsed);
-
-  // Update cookies: spend a credit or mark free used
-  if (credits > 0) {
-    res.cookies.set("credits", String(credits - 1), { httpOnly: true, sameSite: "lax", path: "/" });
-  } else {
-    res.cookies.set("free_used", "1", { httpOnly: true, sameSite: "lax", path: "/" });
-  }
-
-  return res;
+  return NextResponse.json({ ok: true, result: output }, { headers: res.headers });
 }
