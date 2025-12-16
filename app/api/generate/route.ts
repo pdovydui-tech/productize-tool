@@ -28,11 +28,12 @@ export async function POST(req: Request) {
   try {
     const jar = await cookies();
 
-    const isPro = jar.get("is_pro")?.value === "true";
-    const freeUsed = jar.get("free_used")?.value === "true";
+    // ✅ vieninga su tavo /api/access:
+    const freeUsed = jar.get("free_used")?.value === "1";
+    const proFlag = jar.get("pro")?.value === "1"; // (tik flag; real Pro tikrina /api/access su Stripe)
 
-    // ✅ 1 free → tada tik Pro
-    if (!isPro && freeUsed) {
+    // ✅ 1 free → tada tik subscription
+    if (freeUsed && !proFlag) {
       return NextResponse.json({ error: "PAYMENT_REQUIRED" }, { status: 402 });
     }
 
@@ -85,9 +86,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Empty model output", detail: data }, { status: 500 });
     }
 
-    // ✅ po pirmo sėkmingo generavimo pažymim free_used=true (jei ne Pro)
-    if (!isPro) {
-      jar.set("free_used", "true", {
+    // ✅ po pirmo sėkmingo generavimo pažymim free_used=1 (jei ne Pro)
+    if (!proFlag) {
+      jar.set("free_used", "1", {
         path: "/",
         httpOnly: true,
         sameSite: "lax",
