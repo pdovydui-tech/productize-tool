@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,7 +9,6 @@ type Payload = {
 };
 
 function buildPrompt(answers: Record<string, string>) {
-  // Paprastas promptas MVP – vėliau patobulinsim į “tikrą parduodamą produktą”
   const lines = Object.entries(answers).map(([k, v]) => `- ${k}: ${v}`);
   return `
 You are a senior product marketer.
@@ -26,12 +26,19 @@ ${lines.join("\n")}
 
 export async function POST(req: Request) {
   try {
+    const jar = await cookies();
+
+    const isPro = jar.get("is_pro")?.value === "true";
+    const freeUsed = jar.get("free_used")?.value === "true";
+
+    // ✅ 1 free → tada tik Pro
+    if (!isPro && freeUsed) {
+      return NextResponse.json({ error: "PAYMENT_REQUIRED" }, { status: 402 });
+    }
+
     const key = process.env.OPENAI_API_KEY;
     if (!key) {
-      return NextResponse.json(
-        { error: "Missing OPENAI_API_KEY" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
     }
 
     const body = (await req.json()) as Payload;
@@ -47,7 +54,6 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         model: "gpt-5.2",
         input,
-        // mažiau rizikos, kad bus milžiniškas output
         max_output_tokens: 1200,
       }),
     });
@@ -55,25 +61,19 @@ export async function POST(req: Request) {
     const raw = await r.text();
 
     if (!r.ok) {
-      // Labai svarbu: grąžinam tikrą klaidą į UI ir į Vercel logus
       console.error("OpenAI error status:", r.status);
       console.error("OpenAI error body:", raw);
-
       return NextResponse.json(
         { error: "OpenAI request failed", status: r.status, detail: raw },
         { status: 500 }
       );
     }
 
-    // Responses API kartais grąžina output_text; jei ne – ištraukiam iš JSON
     let data: any;
     try {
       data = JSON.parse(raw);
     } catch {
-      return NextResponse.json(
-        { error: "Bad JSON from OpenAI", detail: raw },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Bad JSON from OpenAI", detail: raw }, { status: 500 });
     }
 
     const outputText =
@@ -82,10 +82,18 @@ export async function POST(req: Request) {
       "";
 
     if (!outputText) {
-      return NextResponse.json(
-        { error: "Empty model output", detail: data },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Empty model output", detail: data }, { status: 500 });
+    }
+
+    // ✅ po pirmo sėkmingo generavimo pažymim free_used=true (jei ne Pro)
+    if (!isPro) {
+      jar.set("free_used", "true", {
+        path: "/",
+        httpOnly: true,
+        sameSite: "lax",
+        secure: true,
+        maxAge: 60 * 60 * 24 * 365,
+      });
     }
 
     return NextResponse.json({ ok: true, text: outputText }, { status: 200 });

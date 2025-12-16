@@ -2,46 +2,67 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+type Generation = { ok: true; text: string };
+type Access = { isPro: boolean; freeUsed: boolean; canGenerate: boolean };
+
+function safeJsonParse(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
 
 export default function ResultPage() {
-  const [data, setData] = useState<any>(null);
+  const router = useRouter();
+  const [gen, setGen] = useState<Generation | null>(null);
 
   useEffect(() => {
     const raw = sessionStorage.getItem("generation");
-    if (raw) setData(JSON.parse(raw));
+    if (!raw) return;
+    const data = safeJsonParse(raw);
+    if (data?.text) setGen(data as Generation);
   }, []);
 
-  if (!data) {
-    return (
-      <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
-        <h1 style={{ fontSize: 28 }}>No result yet</h1>
-        <Link href="/interview">
-          <button style={{ padding: "10px 14px" }}>Back to interview</button>
-        </Link>
-      </main>
-    );
+  async function createAnother() {
+    const res = await fetch("/api/access", { cache: "no-store" });
+    const raw = await res.text();
+    const data = safeJsonParse(raw) as Access | null;
+
+    if (!res.ok || !data) {
+      alert("Access check failed:\nHTTP " + res.status + "\n\n" + (raw || "(empty)"));
+      return;
+    }
+
+    if (!data.canGenerate) {
+      router.push("/pay");
+      return;
+    }
+
+    router.push("/interview");
   }
 
   return (
     <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
-      <h1 style={{ fontSize: 34, marginBottom: 6 }}>{data.product_name}</h1>
-      <div style={{ opacity: 0.8, marginBottom: 18 }}>{data.one_liner}</div>
+      <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
+        <button onClick={createAnother} style={{ padding: "10px 14px" }}>
+          Create another
+        </button>
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Link href="/interview">
-          <button style={{ padding: "10px 14px" }}>Create another</button>
-        </Link>
-        <Link href="/pay">
-          <button style={{ padding: "10px 14px" }}>Go Pro (€39/mo)</button>
+        <Link href="/pay" style={{ textDecoration: "none" }}>
+          Go Pro (€39/mo)
         </Link>
       </div>
 
-      <hr style={{ margin: "22px 0" }} />
+      <hr style={{ margin: "20px 0" }} />
 
-      <h2>Outline</h2>
-      <ul>
-        {(data.outline || []).map((x: string, i: number) => <li key={i}>{x}</li>)}
-      </ul>
+      {!gen ? (
+        <p style={{ opacity: 0.8 }}>No result found. Generate first.</p>
+      ) : (
+        <pre style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{gen.text}</pre>
+      )}
     </main>
   );
 }
