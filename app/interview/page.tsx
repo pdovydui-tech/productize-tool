@@ -5,68 +5,82 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { QUESTIONS } from "./questions";
 
-type Balance = {
-  credits: number;
-  freeUsed: boolean;
-  canGenerate: boolean;
-};
+type Access = { isPro: boolean; freeUsed: boolean; canGenerate: boolean };
+
+function safeJsonParse(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
 
 export default function InterviewPage() {
   const router = useRouter();
 
-  const [balance, setBalance] = useState<Balance | null>(null);
-  const [loadingBalance, setLoadingBalance] = useState(true);
+  const [access, setAccess] = useState<Access | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
 
-  // ✅ Gate: if user has 0 credits AND already used free -> redirect to /pay
   useEffect(() => {
-    async function loadBalance() {
+    async function load() {
       try {
-        const res = await fetch("/api/balance", { method: "GET", cache: "no-store" });
+        const res = await fetch("/api/access", { cache: "no-store" });
+        const raw = await res.text();
+        const data = safeJsonParse(raw) as Access | null;
 
-        // Read as text first to avoid "Unexpected end of JSON input"
-        const ct = res.headers.get("content-type") || "";
-        const text = await res.text();
-
-        if (!res.ok) {
-          console.log("Balance error status:", res.status, text);
-          setBalance({ credits: 0, freeUsed: true, canGenerate: false });
+        // jei API blogai atsako — saugiai metame į pay
+        if (!res.ok || !data) {
+          setError(`Access check failed (HTTP ${res.status}).`);
           router.replace("/pay");
           return;
         }
 
-        if (!ct.includes("application/json") || !text) {
-          console.log("Balance non-JSON response:", text);
-          setBalance({ credits: 0, freeUsed: true, canGenerate: false });
-          router.replace("/pay");
-          return;
-        }
+        setAccess(data);
 
-        const data = JSON.parse(text) as Balance;
-        setBalance(data);
-
+        // ✅ pagrindinė taisyklė: jei negali generuoti — net nerodom interview
         if (!data.canGenerate) {
           router.replace("/pay");
           return;
         }
-      } catch (e) {
-        console.log("Balance fetch exception:", e);
-        setBalance({ credits: 0, freeUsed: true, canGenerate: false });
+      } catch (e: any) {
+        setError(`Access check crashed: ${String(e?.message ?? e)}`);
         router.replace("/pay");
       } finally {
-        setLoadingBalance(false);
+        setChecking(false);
       }
     }
 
-    loadBalance();
+    load();
   }, [router]);
+
+  // Kol tikrinam — NIEKO nerodom (kad nematytų klausimų)
+  if (checking) {
+    return (
+      <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
+        <h1 style={{ fontSize: 28, margin: 0 }}>Loading…</h1>
+        <p style={{ opacity: 0.8 }}>Checking access…</p>
+      </main>
+    );
+  }
+
+  // Jei kažkas blogai — jau būsim redirectinę, bet paliekam fallback
+  if (error) {
+    return (
+      <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
+        <h1 style={{ fontSize: 28, margin: 0 }}>Redirecting…</h1>
+        <p style={{ opacity: 0.8 }}>{error}</p>
+        <Link href="/pay">Go to Pay</Link>
+      </main>
+    );
+  }
 
   const total = QUESTIONS.length;
   const q = QUESTIONS[step];
   const value = answers[q.key] ?? "";
-
   const canContinue = useMemo(() => value.trim().length > 0, [value]);
   const isLast = step === total - 1;
   const progress = Math.round(((step + 1) / total) * 100);
@@ -93,23 +107,17 @@ export default function InterviewPage() {
       body: JSON.stringify({ answers }),
     });
 
-    // Paywall by status
+    // jei serveris sako PAYWALL — iškart į pay
     if (resp.status === 402) {
       router.push("/pay");
       return;
     }
 
-    const contentType = resp.headers.get("content-type") || "";
-    const data = contentType.includes("application/json") ? await resp.json() : await resp.text();
+    const raw = await resp.text();
+    const data = safeJsonParse(raw);
 
-    // Paywall by JSON error (fallback)
-    if (typeof data === "object" && data?.error === "PAYMENT_REQUIRED") {
-      router.push("/pay");
-      return;
-    }
-
-    if (!resp.ok) {
-      alert("Generate failed:\n" + (typeof data === "string" ? data : JSON.stringify(data)));
+    if (!resp.ok || !data) {
+      alert(`Generate failed:\nHTTP ${resp.status}\n\n${raw || "(empty)"}`);
       return;
     }
 
@@ -117,38 +125,12 @@ export default function InterviewPage() {
     router.push("/result");
   }
 
-  // Loading screen while checking balance
-  if (loadingBalance) {
-    return (
-      <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
-        <h1 style={{ fontSize: 28, margin: 0 }}>Loading…</h1>
-        <p style={{ opacity: 0.8 }}>Checking credits…</p>
-      </main>
-    );
-  }
-
-  // Safety fallback: if we can't generate, we already redirect to /pay
-  if (balance && !balance.canGenerate) {
-    return (
-      <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
-        <h1 style={{ fontSize: 28, margin: 0 }}>Credits required</h1>
-        <p style={{ opacity: 0.8 }}>Redirecting to payment…</p>
-      </main>
-    );
-  }
-
   return (
     <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ fontSize: 28, margin: 0 }}>Interview</h1>
-
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <div style={{ opacity: 0.85 }}>
-            Credits: <b>{balance?.credits ?? 0}</b>
-          </div>
-          <div style={{ opacity: 0.7 }}>
-            {step + 1}/{total} ({progress}%)
-          </div>
+        <div style={{ opacity: 0.85 }}>
+          Plan: <b>{access?.isPro ? "Pro" : "Free"}</b>
         </div>
       </div>
 
