@@ -1,51 +1,99 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type Payload = {
+  answers: Record<string, string>;
+};
+
+function buildPrompt(answers: Record<string, string>) {
+  // Paprastas promptas MVP – vėliau patobulinsim į “tikrą parduodamą produktą”
+  const lines = Object.entries(answers).map(([k, v]) => `- ${k}: ${v}`);
+  return `
+You are a senior product marketer.
+Create a HIGH-VALUE, actionable, structured digital product draft based on the answers.
+Return:
+1) Title
+2) 1-sentence promise
+3) Table of contents (8-15 items)
+4) The actual content as steps/checklists/templates (not generic)
+5) A short “How to use this” section
+Answers:
+${lines.join("\n")}
+`.trim();
+}
+
 export async function POST(req: Request) {
-  const jar = await cookies();
+  try {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) {
+      return NextResponse.json(
+        { error: "Missing OPENAI_API_KEY" },
+        { status: 500 }
+      );
+    }
 
-  const isPro = jar.get("pro")?.value === "1";
-  const freeUsed = jar.get("free_used")?.value === "1";
+    const body = (await req.json()) as Payload;
+    const answers = body?.answers ?? {};
+    const input = buildPrompt(answers);
 
-  // 1 free use, po to tik subscription
-  if (!isPro && freeUsed) {
-    return NextResponse.json({ error: "PAYMENT_REQUIRED" }, { status: 402 });
-  }
-
-  // pažymim free panaudotą (jei dar ne pro)
-  const res = NextResponse.next();
-  if (!isPro && !freeUsed) {
-    res.cookies.set("free_used", "1", {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 365,
+    const r = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input,
+        // mažiau rizikos, kad bus milžiniškas output
+        max_output_tokens: 1200,
+      }),
     });
+
+    const raw = await r.text();
+
+    if (!r.ok) {
+      // Labai svarbu: grąžinam tikrą klaidą į UI ir į Vercel logus
+      console.error("OpenAI error status:", r.status);
+      console.error("OpenAI error body:", raw);
+
+      return NextResponse.json(
+        { error: "OpenAI request failed", status: r.status, detail: raw },
+        { status: 500 }
+      );
+    }
+
+    // Responses API kartais grąžina output_text; jei ne – ištraukiam iš JSON
+    let data: any;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return NextResponse.json(
+        { error: "Bad JSON from OpenAI", detail: raw },
+        { status: 500 }
+      );
+    }
+
+    const outputText =
+      data?.output_text ??
+      data?.output?.[0]?.content?.[0]?.text ??
+      "";
+
+    if (!outputText) {
+      return NextResponse.json(
+        { error: "Empty model output", detail: data },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ ok: true, text: outputText }, { status: 200 });
+  } catch (e: any) {
+    console.error("Generate route crashed:", e);
+    return NextResponse.json(
+      { error: "Server crashed", detail: String(e?.message ?? e) },
+      { status: 500 }
+    );
   }
-
-  // --- AI GENERAVIMAS (minimalus, bet realiai veikiantis) ---
-  const body = await req.json();
-  const answers = body.answers ?? {};
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
-  }
-
-  // paprasta "template" generacija (jei tavo projekte jau yra kitoks OpenAI kvietimas,
-  // gali palikti savo, svarbu tik kad "gate" viršuje liktų)
-  const output = {
-    title: `Productized offer for: ${answers?.niche ?? "your niche"}`,
-    bullets: [
-      "Clear package scope",
-      "Simple onboarding",
-      "Deliverables + timeline",
-      "Pricing + CTA",
-    ],
-    answers,
-  };
-
-  return NextResponse.json({ ok: true, result: output }, { headers: res.headers });
 }
