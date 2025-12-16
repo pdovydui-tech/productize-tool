@@ -7,58 +7,70 @@ import { QUESTIONS } from "./questions";
 
 type Access = { isPro: boolean; freeUsed: boolean; canGenerate: boolean };
 
-function safeJsonParse(text: string) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
 export default function InterviewPage() {
   const router = useRouter();
 
   const [access, setAccess] = useState<Access | null>(null);
-  const [checking, setChecking] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [fatal, setFatal] = useState<string | null>(null);
 
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
 
+  // ---- LOAD ACCESS (and redirect if cannot generate) ----
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
       try {
-        const res = await fetch("/api/access", { cache: "no-store" });
-        const raw = await res.text();
-        const data = safeJsonParse(raw) as Access | null;
+        setLoading(true);
+        setFatal(null);
 
-        // jei API blogai atsako — saugiai metame į pay
-        if (!res.ok || !data) {
-          setError(`Access check failed (HTTP ${res.status}).`);
-          router.replace("/pay");
-          return;
+        const res = await fetch("/api/access", { cache: "no-store" });
+
+        // jei API nulūžo / grąžino HTML, nebandome json()
+        const text = await res.text();
+        let a: Access | null = null;
+
+        try {
+          a = JSON.parse(text) as Access;
+        } catch {
+          throw new Error("API /api/access returned non-JSON:\n" + text.slice(0, 200));
         }
 
-        setAccess(data);
+        if (cancelled) return;
 
-        // ✅ pagrindinė taisyklė: jei negali generuoti — net nerodom interview
-        if (!data.canGenerate) {
+        setAccess(a);
+
+        if (!a.canGenerate) {
           router.replace("/pay");
           return;
         }
       } catch (e: any) {
-        setError(`Access check crashed: ${String(e?.message ?? e)}`);
-        router.replace("/pay");
+        if (cancelled) return;
+        setFatal(String(e?.message ?? e));
       } finally {
-        setChecking(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     load();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
-  // Kol tikrinam — NIEKO nerodom (kad nematytų klausimų)
-  if (checking) {
+  // ---- QUESTIONS SAFE GUARDS ----
+  const total = QUESTIONS?.length ?? 0;
+
+  // jei netyčia step išeina už ribų, pataisom
+  useEffect(() => {
+    if (total <= 0) return;
+    if (step < 0) setStep(0);
+    if (step > total - 1) setStep(total - 1);
+  }, [step, total]);
+
+  if (loading) {
     return (
       <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
         <h1 style={{ fontSize: 28, margin: 0 }}>Loading…</h1>
@@ -67,19 +79,51 @@ export default function InterviewPage() {
     );
   }
 
-  // Jei kažkas blogai — jau būsim redirectinę, bet paliekam fallback
-  if (error) {
+  if (fatal) {
     return (
       <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
-        <h1 style={{ fontSize: 28, margin: 0 }}>Redirecting…</h1>
-        <p style={{ opacity: 0.8 }}>{error}</p>
-        <Link href="/pay">Go to Pay</Link>
+        <h1 style={{ fontSize: 28, margin: 0 }}>Interview crashed</h1>
+        <p style={{ opacity: 0.85 }}>
+          Error:
+          <pre style={{ whiteSpace: "pre-wrap", background: "#f6f6f6", padding: 12, borderRadius: 8 }}>
+            {fatal}
+          </pre>
+        </p>
+        <Link href="/">
+          <button style={{ padding: "10px 14px" }}>Back Home</button>
+        </Link>
       </main>
     );
   }
 
-  const total = QUESTIONS.length;
+  // jei nėra klausimų – parodom aiškią klaidą (vietoj white screen)
+  if (!QUESTIONS || total === 0) {
+    return (
+      <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
+        <h1 style={{ fontSize: 28, margin: 0 }}>No questions found</h1>
+        <p style={{ opacity: 0.85 }}>File app/interview/questions.ts must export QUESTIONS array.</p>
+        <Link href="/">
+          <button style={{ padding: "10px 14px" }}>Home</button>
+        </Link>
+      </main>
+    );
+  }
+
   const q = QUESTIONS[step];
+  if (!q) {
+    return (
+      <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
+        <h1 style={{ fontSize: 28, margin: 0 }}>Invalid step</h1>
+        <p style={{ opacity: 0.85 }}>
+          Step {step} is out of range (0..{total - 1}).
+        </p>
+        <button onClick={() => setStep(0)} style={{ padding: "10px 14px" }}>
+          Reset
+        </button>
+      </main>
+    );
+  }
+
   const value = answers[q.key] ?? "";
   const canContinue = useMemo(() => value.trim().length > 0, [value]);
   const isLast = step === total - 1;
@@ -90,12 +134,12 @@ export default function InterviewPage() {
   }
 
   function back() {
-    if (step > 0) setStep(step - 1);
+    if (step > 0) setStep((s) => s - 1);
   }
 
   function next() {
     if (!canContinue) return;
-    if (step < total - 1) setStep(step + 1);
+    if (step < total - 1) setStep((s) => s + 1);
   }
 
   async function generate() {
@@ -107,17 +151,22 @@ export default function InterviewPage() {
       body: JSON.stringify({ answers }),
     });
 
-    // jei serveris sako PAYWALL — iškart į pay
     if (resp.status === 402) {
       router.push("/pay");
       return;
     }
 
-    const raw = await resp.text();
-    const data = safeJsonParse(raw);
+    const text = await resp.text();
+    let data: any = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      alert("Generate failed (non-JSON):\n" + text.slice(0, 300));
+      return;
+    }
 
-    if (!resp.ok || !data) {
-      alert(`Generate failed:\nHTTP ${resp.status}\n\n${raw || "(empty)"}`);
+    if (!resp.ok) {
+      alert("Generate failed:\n" + JSON.stringify(data, null, 2));
       return;
     }
 
@@ -156,7 +205,7 @@ export default function InterviewPage() {
             style={{ width: "100%", padding: 12, fontSize: 16 }}
           >
             <option value="">Select…</option>
-            {q.options!.map((o) => (
+            {(q.options ?? []).map((o) => (
               <option key={o} value={o}>
                 {o}
               </option>
