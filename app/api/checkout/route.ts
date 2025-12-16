@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
+
 export async function POST() {
   const appUrl = process.env.APP_URL || "http://localhost:3000";
   const priceId = process.env.STRIPE_PRO_PRICE_ID;
